@@ -190,6 +190,76 @@ def onnx_cell_spec_based_on_inputs(cell_idx_p, cell_idx_theta, onnx_folder):
     return input_bounds, output_bounds, onnx_file_name
 
 
+def vnnlib_cell_spec_based_on_io(cell_idx_p, cell_idx_theta, vnnlib_file_name, newhead=None):
+    p_range = [-10, 10]
+    p_num_bin = 128
+    theta_range = [-30, 30]
+    theta_num_bin = 128
+    p_bins = np.linspace(p_range[0], p_range[1], p_num_bin+1, endpoint=True)
+    p_lbs = np.array(p_bins[:-1],dtype=np.float32)
+    theta_bins = np.linspace(theta_range[0], theta_range[1], theta_num_bin+1, endpoint=True)
+    theta_lbs = np.array(theta_bins[:-1],dtype=np.float32)
+
+
+    p_lb, p_ub = p_lbs[cell_idx_p], p_lbs[cell_idx_p+1]
+    theta_lb, theta_ub = theta_lbs[cell_idx_theta], theta_lbs[cell_idx_theta+1]
+
+    # Open the .h5 file
+    file_path = f'models/Linear/singlecell_{cell_idx_p}_{cell_idx_theta}.h5'
+
+    # Reading the HDF5 file
+    with h5py.File(file_path, 'r') as file:
+        # Read each dataset
+        models_slope = file['modelslopes'][:]
+        models_intercept = file['modelintercept'][()]
+        ranges = file['ranges'][:]
+        validp = file['validp'][:]
+        validtheta = file['validtheta'][:]
+
+    normalization_factor = np.array([6.36615, 17.247995])
+    
+
+    input_bounds = np.array([[-0.8, 0.8], [-0.8, 0.8], [p_lb, p_ub]/normalization_factor[0], [theta_lb, theta_ub]/normalization_factor[1]], dtype=np.float32)
+    if newhead is not None:
+        input_bounds = np.concatenate((newhead, input_bounds[2:, :]), axis=0)
+    
+    # GIVEN THE FOLLOWING: Diff = 'AllInOne'model's output – (A*states + b) | Diff_max = ub, Diff_min = lb, AllInOne'model's output = Y_0, states = [p, theta] = [X_2, X_3], A = models_slope, b = models_intercept 
+    # safe condition: ub >= Y_0 - (A*states + b) , lb <= Y_0 - (A*states + b) ->  unsafe condition: ub <= Y_0 - (A*states + b) or lb >= Y_0 - (A*states + b)
+    # rewrite the unsafe condition (OR of the following statements) as follows:
+    # ub <= Y'_0 - (models_slope[0] * normalization_factor[0] * X_2 + models_slope[1] * normalization_factor[1] * X_1 + b) ,
+    # lb >= Y'_0 - (models_slope[0] * normalization_factor[0] * X_0 + models_slope[1] * normalization_factor[1] * X_3 + b)
+
+
+    with open(vnnlib_file_name, "w") as f:
+        # Declare input variables.
+        f.write("\n")
+        for i in range(input_bounds.shape[0]):
+            f.write(f"(declare-const X_{i} Real)\n")
+        f.write("\n")
+
+        # Declare output variables.
+        f.write("\n")
+        f.write(f"(declare-const Y_0 Real)\n")
+        f.write("\n")
+
+        # Define input constraints.
+        f.write(f"; Input constraints:\n")
+        for i in range(input_bounds.shape[0]):
+            f.write(f"(assert (<= X_{i} {input_bounds[i, 1]}))\n")
+            f.write(f"(assert (>= X_{i} {input_bounds[i, 0]}))\n")
+            f.write("\n")
+        f.write("\n")
+
+        # Define output constraints.
+        f.write(f"; Output constraints:\n")
+        f.write(f"(assert (or")
+        f.write(f"\n")
+        f.write(f"    (and (<= ({ranges[1]+models_intercept} (- Y_0 (+ (* {models_slope[0]*normalization_factor[0]} X_2) (* {models_slope[1]*normalization_factor[1]} X_3))))))\n")
+        f.write(f"    (and (>= ({ranges[0]+models_intercept} (- Y_0 (+ (* {models_slope[0]*normalization_factor[0]} X_2) (* {models_slope[1]*normalization_factor[1]} X_3))))))\n")
+        f.write(f"))")
+        f.write("\n")
+
+
 if __name__ == '__main__':
               
     try:
@@ -212,6 +282,7 @@ if __name__ == '__main__':
 
     cell_list = [(10, 10), (30, 30), (30, 80), (50, 50), (50, 120), (80, 30), (80, 80), (120, 30), (120, 50), (120, 120)]
     timeout = 900
+    newhead_dict = {}
     for cell_idx in cell_list:
         p_idx, theta_idx = cell_idx
         input_bounds, output_bounds, onnx_file_name = onnx_cell_spec_based_on_inputs(p_idx, theta_idx, onnx_folder)
@@ -225,11 +296,34 @@ if __name__ == '__main__':
             positive_rnd = np.random.uniform(0.4, 0.8, (2, 1))
 
             newhead = np.concatenate((negative_rnd, positive_rnd), axis=1)
+            newhead_dict[(p_idx, theta_idx, idx)] = newhead
 
             input_bounds = np.concatenate((newhead, input_bounds[2:, :]), axis=0)
             vnnlib_file_name = f"{vnnlib_folder}/prop_{p_idx}_{theta_idx}_{idx}.vnnlib"
             save_vnnlib(input_bounds, output_bounds, vnnlib_file_name)
 
             f.write(f"{onnx_file_name},{vnnlib_file_name},{timeout}\n")
+        
+    f.close()
+
+
+    # write the specification based on the input and output in a joint format without adding skip connetion to NN (for future support)
+    csv_path = "instances_io.csv"
+    f = open(csv_path, "w")
+
+    cell_list = [(10, 10), (30, 30), (30, 80), (50, 50), (50, 120), (80, 30), (80, 80), (120, 30), (120, 50), (120, 120)]
+    timeout = 900
+    for cell_idx in cell_list:
+        p_idx, theta_idx = cell_idx
+        vnnlib_file_name = f"{vnnlib_folder}/prop_{p_idx}_{theta_idx}_io.vnnlib"
+        vnnlib_cell_spec_based_on_io(p_idx, theta_idx, vnnlib_file_name)
+        f.write(f"onnx/AllInOne.onnx,{vnnlib_file_name},{timeout}\n")
+
+        num_instances = 5
+        for idx in range(num_instances):
+            vnnlib_file_name = f"{vnnlib_folder}/prop_{p_idx}_{theta_idx}_{idx}_io.vnnlib"
+            newhead = newhead_dict[(p_idx, theta_idx, idx)]
+            vnnlib_cell_spec_based_on_io(p_idx, theta_idx, vnnlib_file_name, newhead)
+            f.write(f"onnx/AllInOne.onnx,{vnnlib_file_name},{timeout}\n")
         
     f.close()
