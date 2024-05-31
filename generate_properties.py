@@ -254,8 +254,8 @@ def vnnlib_cell_spec_based_on_io(cell_idx_p, cell_idx_theta, vnnlib_file_name, n
         f.write(f"; Output constraints:\n")
         f.write(f"(assert (or")
         f.write(f"\n")
-        f.write(f"    (and (<= ({ranges[1]+models_intercept} (- Y_0 (+ (* {models_slope[0]*normalization_factor[0]} X_2) (* {models_slope[1]*normalization_factor[1]} X_3))))))\n")
-        f.write(f"    (and (>= ({ranges[0]+models_intercept} (- Y_0 (+ (* {models_slope[0]*normalization_factor[0]} X_2) (* {models_slope[1]*normalization_factor[1]} X_3))))))\n")
+        f.write(f"    (and (<= ({ranges[1]} (- Y_0 (+ (* {models_slope[0]*normalization_factor[0]} X_2) (* {models_slope[1]*normalization_factor[1]} X_3) {models_intercept})))))\n")
+        f.write(f"    (and (>= ({ranges[0]} (- Y_0 (+ (* {models_slope[0]*normalization_factor[0]} X_2) (* {models_slope[1]*normalization_factor[1]} X_3) {models_intercept})))))\n")
         f.write(f"))")
         f.write("\n")
 
